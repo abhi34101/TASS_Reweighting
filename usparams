@@ -1,0 +1,5 @@
+#param file as input to Reweight.py. Used for 'US' and 'US-AFED' methods.
+NUMB=33
+GRID_PARAMS=[-3.2,3.2,0.05] [-3.2,3.2,0.05]
+PERIODICITY=True True
+CVS=0 1

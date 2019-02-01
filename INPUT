@@ -1,0 +1,17 @@
+#NCVS              <Number of CV's>
+#GRID_POINTS       <Parameters for each CV Eg. [MIN1,MAX1,WIDTH1] [MIN2,MAX2,WIDTH2]....>
+#TEMP              <Temperature>
+#U_FORCES          <FORCE CONSTANT for each umbrella. FORMAT: FCV or {F1,F2....Fn} >
+#NFRAMES           <Number of frames or data points for each umbrella: NF or {N1,N2,...Nn} >
+#CONVERGENCE_VALUE <Convergence criteria for WHAM>
+#U_MEANS <Mean CV Values for each umbrella [start, stop, skip] or {m1, m2, m3,...}>
+
+NCVS=2
+NUMB=33
+TEMP=300
+WHAM_TOL=0.000001
+PERIODICITY=True True
+GRID_POINTS=[-3.2,3.2,0.1] [-3.2,3.2,0.1]
+U_MEANS=[-3.2,3.2,0.2]
+U_FORCES=500
+NFRAMES=200000
