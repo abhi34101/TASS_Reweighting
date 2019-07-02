@@ -21,8 +21,8 @@ import argparse
 
 ################# Parse commandline arguments ####################
 parser = argparse.ArgumentParser(description="A script to reweight TASS (N-D), WS(2-D), US-dAFED [2-D] data.")
-parser.add_argument("-m","--method", action='store', default=None, type=str, help="Simulation method employed. 'WS', 'TASS', 'US-AFED' or 'US'.")
-parser.add_argument("-f", "--folder", action="store", default="UMBRELLA_", type=str, help="String common to folders containing the COLVAR files. Default: UMBRELLA_")
+parser.add_argument("-m","--method", action='store', default=None, type=str, help="Simulation method employed. 'WS', 'TASS', 'METAMD', 'US-AFED' or 'US'.")
+parser.add_argument("-f", "--folder", action="store", default=None, type=str, help="String common to folders containing the COLVAR files. Default: None")
 parser.add_argument("-cvf", "--colvar_file", action="store", default="COLVAR", type=str, help="Name of the colvar file in each folder. Default: COLVAR")
 parser.add_argument("-hlf", "--hills_file", action="store", default="HILLS", type=str, help="Name of the hills file in each folder, Default: HILLS")
 parser.add_argument("-p", "--param_file", action="store", default="reweight.par", type=str, help="Name of the input parameter file.")
@@ -39,7 +39,7 @@ KB=1.9872041E-3
 ################ Classes ########################
 
 class ReadColvar:
-    """Reads plumed HILLS file."""
+    """Reads plumed COLVAR file."""
     def __init__(self, filename):
         self.filename=filename
         self.data = np.loadtxt(self.filename)
@@ -50,13 +50,15 @@ class ReadColvar:
             content = f.readlines()
         for l in list(content):
             if "FIELDS" in l and l.startswith("#"):
-                self.legends = l.split()[2:]
+                self.legends = l.split()[3:]
             else:
                 break
         if self.legends != None:
-            print "Found {} CV fields in the colvar file.".format(len(self.legends)-1)
-            for cv in range(len(self.legends)-1):
-                print "CV_{}: {}".format(cv, self.legends[cv+1])
+            print("Found {} CV fields in the colvar file.".format(len(self.legends)))
+            for cv in range(len(self.legends)):
+                print("CV_{}: {}".format(cv, self.legends[cv]))
+        else:
+            print('No legends section found in the output file. Required by the script.')
         return None
 
 class ReadHills(ReadColvar):
@@ -71,10 +73,10 @@ class ReadHills(ReadColvar):
             else:
                 break
         if self.legends!=None:
-            print "Found {} fields in the colvar file.".format(len(self.legends))
+            print("Found {} fields in the colvar file.".format(len(self.legends)))
         return None
 
-class MTD_reweighting:
+class MTD_Reweighting:
     """
     Implements Tiwary and Parrinello method [JPCB (2015) 119, 736-742] for 
     reweighting metadynamics runs perfomed within the framework of 
@@ -85,13 +87,15 @@ class MTD_reweighting:
     but is currently limited to reweighting simulations with metadynamics 
     bias along one orthogonal metad CV across all umbrellas. The other CVs are 
     sampled by coupling them to the extended system at higher temperature 
-    for which a separate reweighting step is used. 
+    for which a separate reweighting step is used. Note: The Umbrella and METAD 
+    CV are also put under Temperature Acceleration which makes reweighting easier.
     
     In case of WS-METAD simulations, currently only 2 CVs can be used.
     
     Imp. Note: The biasfactor above is being calculated taking 
-    Physical temp (self.T0)  as this implicitly accounts for 
-    dAFED reweighting step in TASS. Also note that the inverse
+    Physical temp - self.T0  (and not self.T as it should be since the 
+    METAD is done in the extended high temperature space) as this implicitly 
+    accounts for dAFED reweighting step in TASS. Also note that the inverse
     temp (beta) value is calculated using the extended temp (self.T).
     In case of WS-MTD, the code resets the extended temp (self.T) to 
     T0 to obtain correct values for inverse temp (beta). See code in
@@ -99,7 +103,7 @@ class MTD_reweighting:
     """
     def __init__(self, colvar_dat, hills_dat, T0, T, params):
         """Setting some initializations"""
-        print "Metadynamics Reweighting step."
+        print("Metadynamics Reweighting step.")
         self.pos=hills_dat[:,1]
         self.sig2=hills_dat[:,2]*hills_dat[:,2]
         self.ht=hills_dat[:,3]
@@ -119,7 +123,7 @@ class MTD_reweighting:
         self.mtd_str=params["MTD_STRIDE"]
         if params["TMAX"]==None:
             self.tmax=self.md_steps-1
-            print "Note: TMAX value was not provided in the input file. Using TMAX=Total MD steps."
+            print("Note: TMAX value was not provided in the input file. Using TMAX=Total MD steps.")
         else:
             self.tmax=params["TMAX"]
         self.tmin=params["TMIN"] 
@@ -205,6 +209,9 @@ class MTD_reweighting:
             num = np.exp((vbias[i]-self.ct[time[i]])/self.kbt)
             np.add.at(self.prob, tuple(indices[i]), num)
 
+class MultipleWalker(MTD_Reweighting):
+    pass
+
 class Reweight:
     """Implements reweighting for TASS, WS-METAD and US-dAFED simulation data."""
     def __init__(self, method, params, T0, outputdir):
@@ -220,8 +227,39 @@ class Reweight:
             p_hist/=i
         return p_hist/p_hist.sum()
     
+    def _histo1d_(self, gridpar1, colvar_file, beginframe, endframe, choose_cv=None, periodicity=(False)):
+        """Constructs a 1D histogram for the given CV."""
+        minv1, maxv1, bin_width1=gridpar1
+        cv1_keys = create_floats(minv1, maxv1, bin_width1)
+        histo =  np.zeros(len(cv1_keys))
+        f = ReadColvar(colvar_file)
+        f.read_field()
+        ncvs=f.legends
+        data = f.data[:,1:]
+        if endframe==0:
+            framecount = len(data)
+            data = data[beginframe:framecount]
+        
+        if choose_cv:
+            if ncvs>1:
+                cvindex=choose_cv
+            else:
+                cvindex=[0]
+        else:
+            if ncvs>1:
+                print("Warning: More than one CV has been detected. Yet, the --choose_cv flag has not been used. By default, the script will run calculations on the first CV. Rerun calculations for your choice of cv's by using --choose_cv")
+            cvindex=[0]
+        
+        print("Creating 1D-histogram of CV1...")
+        c1=data[:,cvindex[0]]
+        if periodicity[0]==True:
+            c1 = PBC_update(c1)
+        c1_indices=find_bin(c1, minv1, bin_width1)
+        np.add.at(histo, (c1_indices), 1)
+        return histo, cv1_keys
+            
     def _histo2d_(self, gridpar1, gridpar2, colvar_file, beginframe, endframe, choose_cv=None, periodicity=(False,False)):
-        """Constructs a 2D histogram for the given CV's."""
+        """Constructs a 2D histogram for the given CVs."""
         minv1, maxv1, bin_width1=gridpar1
         minv2, maxv2, bin_width2=gridpar2
         cv1_keys = create_floats(minv1, maxv1, bin_width1) 
@@ -229,25 +267,23 @@ class Reweight:
         histo =  np.zeros([len(cv1_keys),len(cv2_keys)])
         f = ReadColvar(colvar_file)
         f.read_field()
-        cvs=f.legends[1:]
+        ncvs=f.legends
         data = f.data[:,1:]
         if endframe==0:
             framecount = len(data)
             data = data[beginframe:framecount]
             
         if choose_cv:
-            if len(cvs)>2:
-                cvindex=choose_cvs
-            elif len(cvs)==2:
-                cvindex=[0, 1]
+            if ncvs>2:
+                cvindex=choose_cv
             else:
-                raise Exception("Only one CV detected in the COLVAR file.")
+                cvindex=[0, 1]
         else:
-            if len(cvs)>2:
-                 print("Warning: More than two CV's have been detected in the colvar file. Yet, the --choose_cv flag has not been used. By default, the script will run calculations on the first two CV's. Rerun calculations for your choice of cv's by using --cho'")
+            if ncvs>2:
+                 print("Warning: More than two CV's have been detected in the colvar file. Yet, the --choose_cv flag has not been used. By default, the script will run calculations on the first two CV's. Rerun calculations for your choice of cv's by using --choose_cv")
             cvindex=[0, 1]
         
-        print "Creating 2D-histogram of CV{}-vs-CV{}...".format(cvindex[0], cvindex[1])
+        print("Creating 2D-histogram of CV{}-vs-CV{}...".format(cvindex[0], cvindex[1]))
         c1=data[:,cvindex[0]]
         c2=data[:,cvindex[1]]
         if periodicity[0]==True:
@@ -256,50 +292,144 @@ class Reweight:
             c2 = PBC_update(c2)
         c1_indices=find_bin(c1, minv1, bin_width1)
         c2_indices=find_bin(c2, minv2, bin_width2)
-        np.add.at(histo, [c1_indices, c2_indices], 1)
+        np.add.at(histo, (c1_indices, c2_indices), 1)
         return histo, cv1_keys, cv2_keys
+    
+    def _histoNd_(self, gridpars, colvar_file, beginframe, endframe, choose_cv=None, periodicity=None):
+        """Constructs an N-dimensional histogram. This can accept high 
+        dimensional data, but functionality may be limited by the available 
+        memory.
+        """
+        cv_keys = [create_floats(i[0], i[1], i[2]) for i in gridpars]
+        lengths = [len(x) for x in cv_keys]
+        histo = np.zeros(lengths)
+        f = ReadColvar(colvar_file)
+        f.read_field()
+        data=f.data[:,1:]
         
+        if choose_cv:
+            print("Selecting only the CVS specified in input file..")
+            data = data[:,tuple(choose_cv)]
+            f.legends=[list(f.legends)[i] for i in choose_cv]
+        else:
+            print('No specific CVs were specified. The code assumes that all the fields are corresponding to a CV. The corresponing GRID_PARAMS for all CVS are compulsary though.')
+        
+        if endframe==0:
+            framecount = len(data)
+            data = data[beginframe:framecount]
+        
+        print('Note: We are generating a N-dimentional histogram for the input data. The output can be dumped in a file at the final stage, but for visualization it needs further processing.')
+        print('Lets print the useful data.')
+        print(data)
+        print(gridpars)
+        print(periodicity)
+        print(f.legends)
+        #a method to do one shot PBC update
+        
+        out_indices = [find_bin(PBC_update(data[:,i]), gridpars[i][0], gridpars[i][2]) if periodicity[i]==True else find_bin(data[:,i], gridpars[i][0], gridpars[i][2]) for i in range(len(f.legends))]
+        print(out_indices)
+        np.add.at(histo, tuple(out_indices), 1)
+        return histo, cv_keys
+    
     def US(self, folders, colvar_file, beginframe, endframe):
         """Implements simple histogramming of US data."""
         status=self.params["PERIODICITY"]
         cvs=self.params["CVS"]
-        gridpar1=self.params["GRID_PARAMS"][0]
-        gridpar2=self.params["GRID_PARAMS"][1]
-        for fold in folders:
-            os.chdir(fold)
-            Hh, cv1keys, cv2keys = self._histo2d_(gridpar1, gridpar2, colvar_file, beginframe, endframe, choose_cv=cvs, periodicity=status)
-            self.Ph_unbiased=self._normalize_histo_(Hh, [gridpar1[2], gridpar2[2]])
-            write2Dhisto(self.Ph_unbiased, cv1keys, cv2keys)
-            Ucv=fold.split("_")[1]
-            cmd3 = "mv Ph2D.dat Ph2D_{}.dat".format(Ucv)
-            os.system(cmd3)
-            cmd4 = "cp Ph2D_{}.dat ../{}".format(Ucv, self.outputdir) 
-            os.system(cmd4)
-            os.chdir("../")
-        print "Done!!"
+        if len(cvs)==2:
+            gridpar1=self.params["GRID_PARAMS"][0]
+            gridpar2=self.params["GRID_PARAMS"][1]
+            for fold in folders:
+                os.chdir(fold)
+                Hh, cv1keys, cv2keys = self._histo2d_(gridpar1, gridpar2, colvar_file, beginframe, endframe, choose_cv=cvs, periodicity=status)
+                self.Ph_unbiased=self._normalize_histo_(Hh, [gridpar1[2], gridpar2[2]])
+                write2Dhisto(self.Ph_unbiased, cv1keys, cv2keys)
+                if '_' in fold:
+                    Ucv = fold.split("_")[1]
+                else:
+                    Ucv = fold
+                cmd3 = "mv Ph2D.dat Ph2D_{}.dat".format(Ucv)
+                os.system(cmd3)
+                cmd4 = "cp Ph2D_{}.dat ../{}".format(Ucv, self.outputdir) 
+                os.system(cmd4)
+                os.chdir("../")
+        else:
+            gridpar1=self.params["GRID_PARAMS"][0]
+            for fold in folders:
+                os.chdir(fold)
+                Hh, cv1keys = self._histo1d_(gridpar1, colvar_file, beginframe, endframe, choose_cv=cvs, periodicity=status)
+                self.Ph_unbiased=self._normalize_histo_(Hh, [gridpar1[2]])
+                write1Dhisto(self.Ph_unbiased, cv1keys)
+                if '_' in fold:
+                    Ucv = fold.split("_")[1]
+                else:
+                    Ucv = fold
+                cmd3 = "mv Ph1D.dat Ph1D_{}.dat".format(Ucv)
+                os.system(cmd3)
+                cmd4 = "cp Ph1D_{}.dat ../{}".format(Ucv, self.outputdir) 
+                os.system(cmd4)
+                os.chdir("../")
         return None
         
-    def US_adiabatic(self, extT, folders, colvar_file, beginframe, endframe):
+    def US_adiabatic(self, extT, folders, colvar_file, beginframe, endframe): #Now should work for N-dimensions; needs testing though.
+        ##Issue: higher the number of dimensions, greater is the amount of memory required. The maximum dimensions that can be used therefore
+        ##depends on the available system memory.
         """Implements simple histogramming of US data with dAFED reweighting."""
         self.T = extT
         status=self.params["PERIODICITY"]
         cvs=self.params["CVS"]
-        gridpar1=self.params["GRID_PARAMS"][0]
-        gridpar2=self.params["GRID_PARAMS"][1]
+        gridparams = self.params['GRID_PARAMS']
         for fold in folders:
             os.chdir(fold)
-            Hh, cv1keys, cv2keys = self._histo2d_(gridpar1, gridpar2, colvar_file, beginframe, endframe, choose_cv=cvs, periodicity=status)
+            Hh, cvkeys = self._histoNd_(gridparams, colvar_file, beginframe, endframe, choose_cv=cvs, periodicity=status)
             Ph=dAFED_reweighting(Hh, self.T0, self.T)
-            self.Ph_unbiased=self._normalize_histo_(Ph, [gridpar1[2], gridpar2[2]])
-            write2Dhisto(self.Ph_unbiased, cv1keys, cv2keys)
-            Ucv=fold.split("_")[1]
-            cmd3 = "mv Ph2D.dat Ph2D_{}.dat".format(Ucv)
-            os.system(cmd3)
-            print "Unbiased distribution written in {}".format("Ph2D_{}.dat".format(Ucv))
-            cmd4 = "cp Ph2D_{}.dat ../{}".format(Ucv, self.outputdir) 
-            os.system(cmd4)
+            self.Ph_unbiased=self._normalize_histo_(Ph, [i[2] for i in gridparams])
+            if '_' in fold:
+                Ucv = fold.split("_")[1]
+            else:
+                Ucv = fold
+            if len(cvkeys)==1:
+                write1Dhisto(self.Ph_unbiased, cvkeys[0])
+                cmd3 = "mv Ph1D.dat Ph1D_{}.dat".format(Ucv)
+                os.system(cmd3)
+                print("Unbiased distribution written in {}".format("Ph1D_{}.dat".format(Ucv)))
+                cmd4 = "cp Ph1D_{}.dat ../{}".format(Ucv, self.outputdir)
+                os.system(cmd4)
+            elif len(cvkeys)>2:
+                writeNDhisto(self.Ph_unbiased)
+                cmd3 = "mv PhND.dat PhND_{}.dat".format(Ucv)
+                os.system(cmd3)
+                print("Unbiased distribution written in {}".format("PhND_{}.dat".format(Ucv)))
+                cmd4 = "cp PhND_{}.dat ../{}".format(Ucv, self.outputdir)
+                os.system(cmd4)
+            else:
+                write2Dhisto(self.Ph_unbiased, cvkeys[0], cvkeys[1])
+                cmd3 = "mv Ph2D.dat Ph2D_{}.dat".format(Ucv)
+                os.system(cmd3)
+                print("Unbiased distribution written in {}".format("Ph2D_{}.dat".format(Ucv)))
+                cmd4 = "cp Ph2D_{}.dat ../{}".format(Ucv, self.outputdir)
+                os.system(cmd4)
             os.chdir("../")
-        print "Done!!"
+        print("Done!!")
+        return None
+    
+    def METAD_adiabatic(self, extT, colvar_file, hills_file):
+        """
+        Implements reweighting for simulations biased using WT-METAD and TAMD.
+        This assumes that METAD is performed along only one CV and TAMD is used
+        to bias sampling along all the other orthogonal CVs. Although in 
+        principle there is no limit to the number of CV that can be biased, but 
+        there may be problems in running the reweighting step with large number
+        of CVs. Practically, it makes sense to just do reweighting for the main
+        CVs of interest, that can be visualized (puts a limit of max 3 CVs).
+        """
+        self.T=extT
+        colvar=ReadColvar(colvar_file)
+        hills=ReadHills(hills_file)
+        metad=MTD_Reweighting(colvar.data, hills.data, self.T0, self.T, self.params)
+        metad.calc_ct()
+        metad.calc_vbias()
+        metad.calc_prob()
+        self.P_unbiased=self._normalize_histo_(metad.prob, metad.grid_params[:,2])
         return None
     
     def WS(self, T0, colvar_file, hills_file):
@@ -314,7 +444,7 @@ class Reweight:
         self.T=T0 
         colvar=ReadColvar(colvar_file)
         hills=ReadHills(hills_file)
-        metad = MTD_reweighting(colvar.data, hills.data, self.T0, self.T, self.params)
+        metad = MTD_Reweighting(colvar.data, hills.data, self.T0, self.T, self.params)
         metad.calc_ct()
         metad.calc_vbias()
         metad.calc_prob()
@@ -326,12 +456,16 @@ class Reweight:
         Implements reweighting of TASS data. Can be used with any number of 
         CVs, but the assumes that only one orthogonal metad-CV is used for 
         biasing simulations across all umbrella slices. Rest of the CV's are
-        assumed to be sampled by high temperature of the extended system.
+        assumed to be sampled by high temperature of the extended system. Here
+        too there is no limit to the number of CV that can be biased, but 
+        there may be problems in running the reweighting step with large number
+        of CVs. Practically, it makes sense to just do reweighting for the main
+        CVs of interest, that need to be visualized (puts a limit of max 3 CVs).
         """
         self.T=extT
         colvar=ReadColvar(colvar_file)
         hills=ReadHills(hills_file)
-        metad = MTD_reweighting(colvar.data, hills.data, self.T0, self.T, self.params)
+        metad = MTD_Reweighting(colvar.data, hills.data, self.T0, self.T, self.params)
         metad.calc_ct()
         metad.calc_vbias()
         metad.calc_prob()
@@ -344,35 +478,47 @@ def arg_sanity_check(args):
     """Sanity check for commandline arguments."""
     if args.method==None:
         raise Exception("The method argument was not provided. Provide the method using '-m' or '--method' flag.")
-    elif args.method.upper() not in ["TASS", "WS", "US-AFED", "US"]:
-        raise Exception("Wrong Input method provided. Check input for flag '-m' or '--method'. ")
+    elif args.method.upper() not in ["TASS", "WS", "US-AFED", "US", "METAMD"]:
+        raise Exception("Wrong Input method provided. Check input for flag '-m' or '--method'.")
     else:
-        print "{} reweighting will be performed to obtain unbiased probability distributions.".format(args.method)
+        print("{} reweighting will be performed to obtain unbiased probability distributions.".format(args.method))
     
-    args.folder=glob.glob(args.folder+"*")
-    if len(args.folder) == 0:
-        raise Exception("No folders were found in the run directory. Check input for flag '-f' or '--folder'")
+    if args.folder: 
+        args.folder=glob.glob(args.folder+"*")
+        if len(args.folder) == 0:
+            raise Exception("No folders were found in the run directory. Check input for flag '-f' or '--folder'")
+    else:
+        print("The flag --folder has a value of None. The code will assume that no umbrella sampling has been performed. Currently, reweighting for METAD runs combined with TAMD is implemented")
+        print("Checking if chosed method is METAMD.")
+        if args.method.upper()!="METAMD":
+            raise Exception("Wrong choice of method. Either, you need to provide the name of the umbrella folders (if there are multiple US simulation runs) or the --method must be METAMD.")
+        else:
+            print("OK")
     
     if not os.path.exists(args.param_file):
         raise Exception("No paramfile named {} was found in the run directory. Check input for flag '-p' or '--param_file.'".format(args.param_file))
     
     if args.Temp0:
-        print "Using system temperature: {}".format(args.Temp0)
+        print("Using system temperature: {}".format(args.Temp0))
     
-    if not args.Temp and args.method.upper() in ["TASS", "US-AFED"]:
+    if not args.Temp and args.method.upper() in ["TASS", "US-AFED", "METAMD"]:
         raise Exception("Method is {} but temperature for extended system not provided. Use '-T' or '--Temp' flag.".format(args.method))
     elif args.Temp and args.method.upper() in ["US", "WS"]:
-        print "Extended temperature not needed. Not using --Temp value."
+        print("Extended temperature not needed. Not using --Temp value.")
     else:
-        print "Using CV temperature: {}".format(args.Temp)
+        print("Using CV temperature: {}".format(args.Temp))
         pass
         
     if args.hills_file and args.method in ["US-AFED", "US"]:
-        print "Note: HILLS file not required for US-AFED or US reweighting."
+        print("Note: HILLS file not required for US-AFED or US reweighting.")
     
     if args.beginframe or args.endframe:
-        if args.method in ["TASS", "WS"]:
-            print "Warning: The flags '--beginframe' and '--endframe' are used only in US-AFED and US reweighting. Will use all frames "
+        if args.method in ["TASS", "WS", "METAMD"]:
+            print("Warning: The flags '--beginframe' and '--endframe' are used only in US-AFED and US reweighting.")
+            print("For TASS, WS and METAMD, the choice of starting frames are controlled by the TMIN and TMAX directives in the paramfile.")
+            args.beginframe, args.endframe = None, None
+        else:
+            print("Using data from frames {} to {}.".format(args.beginframe, args.endframe))
 
 def process_INPUT(method, paramfile):
     """
@@ -390,7 +536,7 @@ def process_INPUT(method, paramfile):
         elif field[0].isdigit():
             out = int(field)
         else:
-            raise Error("Problem with input format.")
+            raise Exception("Problem with input format.")
         return out
         
     def TASS_WS_param(paramfile):
@@ -419,12 +565,12 @@ def process_INPUT(method, paramfile):
                 elif argflags[0]=="NUMB":
                     param_table[argflags[0]]=int(argflags[1])
                 elif argflags[0]=="PERIODICITY":
-                    param_table[argflags[0]]=tuple([bool(boolarg) for boolarg in argflags[1].split()])
+                    param_table[argflags[0]]=tuple([boolarg for boolarg in argflags[1].split()])
                 elif argflags[0]=="GRID_PARAMS":
                     griddat = [range_flags(gridarg) for gridarg in argflags[1].split()]
                     param_table[argflags[0]]=np.array(griddat)
                 else:
-                    print "Wrong Flag used: {}".format(argflags[0])
+                    print("Wrong flagname: {}. Allowed lags should be {}".format(argflags[0], list(param_table.keys())))
                     raise ValueError("Check input file.")
         if method=='WS' and param_table['NCVS'] > 2:
             raise Exception
@@ -448,22 +594,64 @@ def process_INPUT(method, paramfile):
                 if argflags[0]=="NUMB":
                     param_table[argflags[0]]=int(argflags[1])
                 elif argflags[0]=="PERIODICITY":
-                    param_table[argflags[0]]=tuple([bool(boolarg) for boolarg in argflags[1].split()])
+                    param_table[argflags[0]]=tuple([boolarg for boolarg in argflags[1].split()])
                 elif argflags[0]=="GRID_PARAMS":
                     griddat = [range_flags(gridarg) for gridarg in argflags[1].split()]
                     param_table[argflags[0]]=griddat
                 elif argflags[0]=="CVS":
                     param_table[argflags[0]]=[int(cv) for cv in argflags[1].split()]
                 else:
-                    print "Wrong Flag used: {}".format(argflags[0])
+                    print("Wrong flagname: {}. Allowed flags should be {}".format(argflags[0], list(param_table.keys())))
                     raise ValueError("Check input file.")
         return param_table
+    
+    def METAMD_param(paramfile):
+        """Parses the METAMD input param file"""
+        param_table= {"NCVS": 0,
+                     "PERIODICITY":None,
+                     "GRID_PARAMS": None,
+                     "MTD_CV": 1,
+                     "CV_STRIDE":0,
+                     "MTD_STRIDE":0,
+                     "TMIN":0,
+                     "TMAX":None,
+                     "DELTA_TB":None
+                     }
+        with open(paramfile, 'r') as inpf:
+            params=inpf.readlines()
         
+        for line in params:
+            if line.startswith("#") or line.startswith("\n"):
+                pass
+            else:
+                argflags = line.split("=")
+                if argflags[0] in ["NCVS", "MTD_CV", "CV_STRIDE", "MTD_STRIDE", "TMIN", "TMAX", "DELTA_TB"]:
+                    param_table[argflags[0]]=int(argflags[1])
+                elif argflags[0]=="PERIODICITY":
+                    param_table[argflags[0]]=tuple([boolarg for boolarg in argflags[1].split()])
+                elif argflags[0]=="GRID_PARAMS":
+                    griddat = [range_flags(gridarg) for gridarg in argflags[1].split()]
+                    param_table[argflags[0]]=np.array(griddat)
+                else:
+                    print("Wrong flagname: {}. Allowed lags should be {}".format(argflags[0], list(param_table.keys())))
+                    raise ValueError("Check input file.")
+        return param_table
+    
     if method in ["TASS", "WS"]:
         params = TASS_WS_param(paramfile)
     elif method in ["US-AFED", "US"]:
         params = US_AFED_param(paramfile)
+    else:
+        params = METAMD_param(paramfile)
     return params
+
+def write1Dhisto(matrix, gridlist1):
+    """Writes 1D histogram matrix to a file."""
+    with open("Ph1D.dat", 'w') as out:
+        for i in range(matrix.shape[0]):
+            l = (" "*8).join([format(gridlist1[i], '.16f'), format(matrix[i], '.16f')])
+            out.write(l+'\n')
+    return None
 
 def write2Dhisto(arr, gridlist1, gridlist2):
     """Writes 2D histogram matrix to a file."""
@@ -480,12 +668,10 @@ def writeNDhisto(arr):
        arrays greater than 2-dimesions are inherently difficult to read and write\
        in a human readable manner (also slower). For extracting the data for 
        visualization purposes, a simple script for data extraction and visualization 
-       will soon be provided.
-       In addition this also saves the data in a plain one value/line format for 
-       compatibility with Shalini's wham script'. This will soon be deprecated.
-    """
-    print "Writing numpy binary output file."
+       will soon be provided. In addition this also saves the data in a plain one value/line format for 
+       compatibility with Shalini's WHAM script'. This will soon be deprecated."""
     np.save("PhND.npy", arr)
+    print("Writing numpy binary output file.")
     out=arr.flatten()
     out=list(out.astype(str))
     with open("PhND.dat", 'w') as f:
@@ -501,7 +687,7 @@ def temp_unitconv(value, unit):
     elif unit.lower()=="kj":
         return 4.184*value
     else:
-        print "Warning: conversion unit not correctly provided! Returning unprocessed value."
+        print("Warning: conversion unit not correctly provided! Returning unprocessed value.")
         return value
 
 def PBC_update(arr):
@@ -526,12 +712,14 @@ def find_bin(value, gridmin, step):
     Note: Here, +1 is not added to ind value since in python indexing starts from 0
     """
     ind = (value-gridmin)/step
+    print(ind)
     return np.array(ind, 'int') 
 
 def dAFED_reweighting(p_hist, T0, T):
     """Performs reweighting of Probability histogram obtained from dAFED simulations."""
     tempfactor= float(T)/T0
     return p_hist**tempfactor
+
 
 ##################### Main ######################
 def main(args):
@@ -541,7 +729,7 @@ def main(args):
     NOTE: In case of US-AFED and US, the iteration over umbrella folders are being 
     done in an inner loop. This is a little problematic if we want to choose the type
     reweighting we want for each umbrella. This feature may be implemented in a future 
-    version.
+    version, but will require some extensive changes to the code, so it may take a while.
     """
     try:
         arg_sanity_check(args)
@@ -554,20 +742,32 @@ def main(args):
         raise Exception("Error in reading input parameter file.")
     
     folders=args.folder
+    if folders!=None:
+        print("Folders :", folders)
+        if len(folders)!=inparams["NUMB"]:
+            raise Exception("Number of Umbrella run directories do not match the 'NUMB' in the paramfile. Make sure you are not missing any data.")
     
-    if len(folders)!=inparams["NUMB"]:
-        raise Exception("Number of Umbrella run directories do not match the 'NUMB' in the paramfile. Make sure you are not missing any data.")
-        
-    print "Folders :", folders
-    outdir = "Pu_outfiles_"+args.method
+    
+    outdir = "Ph_outfiles_"+args.method
     if os.path.exists(outdir) == False:
         os.mkdir(outdir)
-     
+    else:
+        ofold = glob.glob('bck.*.'+outdir)
+        if len(ofold) == 0:
+            os.system("mv {} bck.1.{}".format(outdir, outdir))
+        else:
+            n = int(ofold[-1][4])
+            os.system("mv {} bck.{}.{}".format(outdir, n+1, outdir))
+        os.mkdir(outdir)
+    
     reweight = Reweight(args.method, inparams, args.Temp0, outdir)
     if args.method in ["TASS", "WS"]:
         for fold in folders:
             os.chdir(fold)
-            Ucv=fold.split("_")[1]
+            if '_' in fold:
+                Ucv = fold.split("_")[1]
+            else:
+                Ucv = fold
             if args.method=="TASS":
                 reweight.TASS(args.Temp, args.colvar_file, args.hills_file)
             else:
@@ -579,22 +779,40 @@ def main(args):
                 cv2_keys = create_floats(minv2, maxv2, bin_width2)
                 write2Dhisto(reweight.P_unbiased, cv1_keys, cv2_keys)
                 cmd1 = "mv Ph2D.dat Ph2D_{}.dat".format(Ucv)
-                print "Unbiased distribution written in {}".format("Ph2D_{}.dat".format(Ucv))
+                print("Unbiased distribution written in {}".format("Ph2D_{}.dat".format(Ucv)))
                 cmd2 = "cp Ph2D_{}.dat ../{}".format(Ucv, outdir)
             else:
                 writeNDhisto(reweight.P_unbiased)
                 cmd1 = "mv PhND.dat PhND_{}.dat".format(Ucv)
-                print "Unbiased distribution written in {}".format("PhND_{}.dat".format(Ucv))
+                print("Unbiased distribution written in {}".format("PhND_{}.dat".format(Ucv)))
                 cmd2 = "cp PhND_{}.dat ../{}".format(Ucv, outdir)
             os.system(cmd1)
             os.system(cmd2)
             os.chdir("../")
     elif args.method == "US-AFED":
         reweight.US_adiabatic(args.Temp, folders, args.colvar_file, args.beginframe, args.endframe)
+    elif args.method == "METAMD":
+        reweight.METAD_adiabatic(args.Temp, args.colvar_file, args.hills_file)
+        if len(reweight.params["GRID_PARAMS"])==2:
+            minv1, maxv1, bin_width1=reweight.params["GRID_PARAMS"][0]
+            minv2, maxv2, bin_width2=reweight.params["GRID_PARAMS"][1]
+            cv1_keys = create_floats(minv1, maxv1, bin_width1)
+            cv2_keys = create_floats(minv2, maxv2, bin_width2)
+            write2Dhisto(reweight.P_unbiased, cv1_keys, cv2_keys)
+            cmd1 = "mv Ph2D.dat Ph2D_{}.dat".format(Ucv)
+            print("Unbiased distribution written in {}".format("Ph2D_{}.dat".format(Ucv)))
+            cmd2 = "cp Ph2D_{}.dat ../{}".format(Ucv, outdir)
+        else:
+            writeNDhisto(reweight.P_unbiased)
+            cmd1 = "mv PhND.dat PhND_{}.dat".format(Ucv)
+            print("Unbiased distribution written in {}".format("PhND_{}.dat".format(Ucv)))
+            cmd2 = "cp PhND_{}.dat ../{}".format(Ucv, outdir)
+        os.system(cmd1)
+        os.system(cmd2)
     else:
-        reweight.US(folders, args.colvar_file, args.beginframe, args.endframe)
+        reweight.US(folders, args.colvar_file, args.beginframe, args.endframe) #checked
     
-    print "Done!!"
+    print("Done!!")
     return None
         
 
