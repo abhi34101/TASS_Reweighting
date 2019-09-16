@@ -1,0 +1,24 @@
+#specify the column number from the colavr file (numbered starting from 0)
+CVS= 1 2 6
+#periodicity of the CV chosen above
+PERIODICITY=False False False
+#grid parameters the CVs for calculation of the FES or Prob on a grid
+GRID_PARAMS=[-3.0,3.0,0.05] [-1.0,1.0,0.04] [10.0,100.0,5.0]
+#of the chosen CV which one is the METAD CV (numbered starting from 0)
+MTD_CV=0
+#COLVAR print stride used in plumed file
+CV_STRIDE=1500
+#MTD hills pace used
+MTD_STRIDE=1500
+#The minimum for the data range to be used for FES calculations
+#TMIN=0
+#The maximum for the data range to be used for FES calculations
+#TMAX=None
+#the factor used to calculate the biasfactor taking T as the system temperature
+DELTA_TB=8700
+#Number of walkers used
+NWALKER=16
+#columns specifying the wall potentials used for the simulations (numbered starting from 0)
+WALLS=10 11 12 13 14 15
+#column for Rbias
+RBIASCOL=9
