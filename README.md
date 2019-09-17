@@ -6,8 +6,11 @@ Features:
         1. Reweighting for simulations biased using TASS and WS. c(t) and total bias is 
            calulated post simulation from the hills file, and reweighting is done using 
            the Tiwary and Parrinello method [JPCB (2015) 119, 736-742].
+           
         2. Reweighting for simulations biased using METAD and TAMD (METAMD). In this case, 
            2D and 3D pmf can be generated for the chosen combinations of biased CVs.
+           
+           
         3. The METAMD reweighting reads the rbias printed by plumed into the COLVAR file.
            Make sure the rbias is printed in the COLVAR file only. This method is faster
            than recalculating rbias from scratch, as we do in case of TASS and WS.
