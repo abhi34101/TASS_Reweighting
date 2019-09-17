@@ -3,6 +3,7 @@ This repository contains some python scripts for unbiasing TASS (Temperature Acc
 Please see below for details on features.
 
 Features:
+
         1. Reweighting for simulations biased using TASS and WS. c(t) and total bias is 
            calulated post simulation from the hills file, and reweighting is done using 
            the Tiwary and Parrinello method [JPCB (2015) 119, 736-742].
