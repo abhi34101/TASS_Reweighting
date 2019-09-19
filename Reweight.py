@@ -777,9 +777,11 @@ def arg_sanity_check(args):
             coordstr=args.mtzcoord.split(",")
             args.mtzcoord=[int(i) for i in coordstr]
         print("Following values to be used for mintozero function: --mintozero {} --mtzcoord {} --mtzgsize {}.".format(args.mintozero, args.mtzcoord, args.mtzgsize))
-    else:
+    elif args.mintozero and args.method!="METAMD":
         print(">>> Note: --mintozero only implemented for method METAMD. Turning of mintozero flag.")
         args.mintozero=False
+    else:
+        print("No mintozero flag used. Recommended for comparing different FES.")
 
 def process_INPUT(method, paramfile):
     """
@@ -1005,19 +1007,21 @@ def dAFED_reweighting(p_hist, T0, T):
 
 def writeFE(arr, grids, outf):
         with open(outf, 'w') as out:
-            for i in range(arr.shape[0]):
-                if len(grids)>=2:
+            if len(grids)==3:
+                for i in range(arr.shape[0]):
                     for j in range(arr.shape[1]):
-                        if len(grids)==3:
-                            for k in range(arr.shape[2]):
-                                l = (" "*8).join([format(grids[0][i], '.16f'), format(grids[1][j], '.16f'), format(grids[2][k], '.16f'), format(arr[i, j, k], '.16f')])
-                                out.write(l+'\n')
-                            out.write("\n")
-                        else:
-                            l = (" "*8).join([format(grids[0][i], '.16f'), format(grids[1][j], '.16f'), format(arr[i, j], '.16f')])
-                            out.write(l+"\n")
+                        for k in range(arr.shape[2]):
+                            l = (" "*8).join([format(grids[0][i], '.16f'), format(grids[1][j], '.16f'), format(grids[2][k], '.16f'), format(arr[i, j, k], '.16f')])
+                            out.write(l+'\n')
+                        out.write('\n')
+            elif len(grids)==2:
+                for i in range(arr.shape[0]):
+                    for j in range(arr.shape[1]):
+                        l = (" "*8).join([format(grids[0][i], '.16f'), format(grids[1][j], '.16f'), format(arr[i, j], '.16f')])
                         out.write(l+"\n")
-                else:
+                    out.write(l+"\n")
+            else:
+                for i in range(arr.shape[0]):
                     l = (" "*8).join([format(grids[0][i], '.16f'), format(arr[i], '.16f')])
                     out.write(l+"\n")
                 out.write("\n")
